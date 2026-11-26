@@ -1,0 +1,152 @@
+/* Only theme colours (@theme_*, @borders, …) and currentColor are used, so
+   the app follows whatever GTK theme is active, light or dark. */
+
+.s2s-sidebar {
+  background: transparent;
+}
+.s2s-sidebar-pane {
+  background: alpha(currentColor, 0.035);
+  border-right: 1px solid alpha(currentColor, 0.12);
+}
+.s2s-sidebar row {
+  min-height: 38px;
+  border-radius: 8px;
+  margin: 1px 8px;
+}
+.s2s-sidebar row image {
+  margin-right: 10px;
+  opacity: 0.85;
+}
+
+.s2s-page-title {
+  font-size: 1.55em;
+  font-weight: 800;
+}
+.s2s-page-desc {
+  opacity: 0.7;
+}
+
+.s2s-group-title {
+  font-weight: bold;
+  margin: 22px 4px 2px 4px;
+}
+.s2s-group-desc {
+  font-size: smaller;
+  opacity: 0.7;
+  margin: 0 4px 6px 4px;
+}
+
+list.s2s-card {
+  background: @theme_base_color;
+  border: 1px solid alpha(currentColor, 0.13);
+  border-radius: 12px;
+  padding: 0;
+}
+list.s2s-card > row {
+  padding: 8px 14px;
+  min-height: 34px;
+  border-radius: 0;
+}
+list.s2s-card > row:first-child {
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+}
+list.s2s-card > row:last-child {
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+list.s2s-card > row:hover,
+list.s2s-card > row:selected {
+  background: transparent;
+}
+list.s2s-card > separator {
+  background: alpha(currentColor, 0.09);
+}
+
+.s2s-row-title {
+}
+.s2s-row-subtitle {
+  font-size: smaller;
+  opacity: 0.65;
+}
+.s2s-info {
+  font-size: smaller;
+  opacity: 0.75;
+}
+
+.s2s-badge {
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: smaller;
+  font-weight: bold;
+  background: alpha(@theme_selected_bg_color, 0.16);
+  color: mix(@theme_selected_bg_color, @theme_fg_color, 0.25);
+}
+.s2s-badge.ok {
+  background: alpha(@success_color, 0.18);
+  color: mix(@success_color, @theme_fg_color, 0.25);
+}
+.s2s-badge.warn {
+  background: alpha(@warning_color, 0.2);
+  color: mix(@warning_color, @theme_fg_color, 0.3);
+}
+.s2s-badge.error {
+  background: alpha(@error_color, 0.16);
+  color: @error_color;
+}
+
+entry.s2s-invalid {
+  outline: 2px solid alpha(@error_color, 0.7);
+  outline-offset: -2px;
+}
+
+.s2s-actionbar {
+  padding: 10px 14px;
+  border-top: 1px solid alpha(currentColor, 0.12);
+  background: alpha(currentColor, 0.025);
+}
+.s2s-actionbar progressbar trough,
+.s2s-actionbar progressbar progress {
+  min-height: 6px;
+  border-radius: 3px;
+}
+.s2s-status {
+  font-size: smaller;
+  opacity: 0.8;
+}
+
+.s2s-tool-card {
+  background: @theme_base_color;
+  border: 1px solid alpha(currentColor, 0.13);
+  border-radius: 12px;
+  padding: 16px;
+}
+.s2s-tool-card image {
+  opacity: 0.8;
+}
+
+.s2s-token {
+  font-family: monospace;
+  font-size: smaller;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: alpha(currentColor, 0.08);
+}
+
+.s2s-preview-snap {
+  background: alpha(currentColor, 0.06);
+  border-radius: 10px;
+}
+.s2s-dim {
+  opacity: 0.45;
+}
+.s2s-ctx {
+  font-style: italic;
+}
+columnview.s2s-lines {
+  background: @theme_base_color;
+}
+
+.s2s-empty {
+  opacity: 0.55;
+}

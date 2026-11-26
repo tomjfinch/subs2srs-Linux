@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.subs2srs.Subs2srs</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>subs2srs</name>
+  <summary>Create Anki flashcards from videos and subtitles</summary>
+  <description>
+    <p>
+      subs2srs turns TV shows and movies with subtitles into Anki flashcards for
+      language learning. Each card gets the line in the language you're learning,
+      an optional translation, an audio clip, a snapshot and optionally a video clip.
+    </p>
+    <p>
+      This is a native Linux port written in Rust with a GTK4 interface that follows
+      your GTK theme in light and dark mode.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.subs2srs.Subs2srs.desktop</launchable>
+  <categories>
+    <category>Education</category>
+    <category>Languages</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -1,0 +1,371 @@
+//! Extra tools: dueling (dual-language) subtitles and audio extraction.
+
+use crate::ffmpeg;
+use crate::files::{self, AUDIO_EXTS, VIDEO_EXTS};
+use crate::model::Episode;
+use crate::naming::{sanitize_filename, Namer};
+use crate::pipeline::{self, Inputs};
+use crate::progress::Progress;
+use crate::settings::{AudioFormat, Prefs, Project, SubsSettings, Toggle};
+use crate::time::{self, Ms};
+use crate::{bail, Error, Result};
+use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
+use std::path::PathBuf;
+
+// ── Dueling subtitles ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AssStyle {
+    pub font: String,
+    pub size: u32,
+    pub bold: bool,
+    pub italic: bool,
+    /// `#RRGGBB`
+    pub primary: String,
+    pub outline_color: String,
+    pub shadow_color: String,
+    pub outline: u32,
+    pub shadow: u32,
+    pub opaque_box: bool,
+    /// Numpad alignment: 2 = bottom centre, 8 = top centre.
+    pub alignment: u32,
+    pub margin_v: u32,
+}
+
+impl Default for AssStyle {
+    fn default() -> Self {
+        AssStyle {
+            font: "Noto Sans CJK JP".into(),
+            size: 22,
+            bold: false,
+            italic: false,
+            primary: "#FFFFFF".into(),
+            outline_color: "#000000".into(),
+            shadow_color: "#000000".into(),
+            outline: 2,
+            shadow: 1,
+            opaque_box: false,
+            alignment: 2,
+            margin_v: 20,
+        }
+    }
+}
+
+fn ass_color(hex: &str, alpha: u8) -> String {
+    let h = hex.trim().trim_start_matches('#');
+    let v = u32::from_str_radix(h, 16).unwrap_or(0xFFFFFF);
+    let (r, g, b) = ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+    format!("&H{alpha:02X}{b:02X}{g:02X}{r:02X}")
+}
+
+impl AssStyle {
+    fn line(&self, name: &str) -> String {
+        let b = |x: bool| if x { -1 } else { 0 };
+        format!(
+            "Style: {name},{},{},{},{},{},{},{},{},0,0,100,100,0,0,{},{},{},{},10,10,{},1",
+            self.font,
+            self.size,
+            ass_color(&self.primary, 0),
+            ass_color(&self.primary, 0),
+            ass_color(&self.outline_color, 0),
+            ass_color(&self.shadow_color, 0x80),
+            b(self.bold),
+            b(self.italic),
+            if self.opaque_box { 3 } else { 1 },
+            self.outline,
+            self.shadow,
+            self.alignment,
+            self.margin_v
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DuelingSettings {
+    pub style1: AssStyle,
+    pub style2: AssStyle,
+    /// Show Subs2 on every Nth line only (1 = always).
+    pub pattern: usize,
+    /// Write the Subs2 line before the Subs1 line.
+    pub subs2_first: bool,
+    pub quick_reference: bool,
+}
+
+impl Default for DuelingSettings {
+    fn default() -> Self {
+        DuelingSettings {
+            style1: AssStyle::default(),
+            style2: AssStyle {
+                font: "Noto Sans".into(),
+                size: 18,
+                primary: "#FFF3A0".into(),
+                alignment: 8,
+                ..AssStyle::default()
+            },
+            pattern: 1,
+            subs2_first: false,
+            quick_reference: false,
+        }
+    }
+}
+
+/// Create one `.ass` per episode with both languages, plus optional
+/// plain-text quick reference files. Uses the project's Subs1/Subs2,
+/// timing, shift and output settings.
+pub fn dueling(p: &Project, prefs: &Prefs, d: &DuelingSettings, progress: &Progress) -> Result<Vec<PathBuf>> {
+    if !p.has_subs2() {
+        bail!("Dueling subtitles need both Subs1 and Subs2.");
+    }
+    if p.output_dir.trim().is_empty() || p.deck_name.trim().is_empty() {
+        bail!("Set the deck name and output folder on the Main page.");
+    }
+    let mut q = p.clone();
+    // Media isn't needed for this tool.
+    q.audio.enabled = false;
+    q.snapshots.enabled = false;
+    q.video_clips.enabled = false;
+    progress.set_steps(2);
+    progress.next_step("Reading subtitles");
+    let inp = pipeline::resolve_inputs(&q)?;
+    let eps = pipeline::load_episodes(&q, &inp, progress, true)?;
+    progress.next_step("Writing subtitles");
+    let out_dir = PathBuf::from(files::expand_tilde(q.output_dir.trim()));
+    std::fs::create_dir_all(&out_dir)?;
+    let total: usize = eps.iter().map(|e| e.lines.len()).sum();
+    let last = eps.iter().flat_map(|e| e.lines.iter().map(|c| c.end())).max().unwrap_or(0);
+    let namer = Namer::new(&q.clean_deck_name(), eps.len(), total, last);
+    let every = d.pattern.max(1);
+    let mut written = Vec::new();
+    let mut seq = 0;
+    for (ei, ep) in eps.iter().enumerate() {
+        progress.check()?;
+        progress.update(Some(ei as f64 / eps.len() as f64), format!("Episode {}", ep.number));
+        let mut s = String::new();
+        let _ = write!(
+            s,
+            "[Script Info]\n; Generated by subs2srs\nTitle: {}_{:03}\nScriptType: v4.00+\nCollisions: Normal\nWrapStyle: 0\nScaledBorderAndShadow: yes\nPlayResX: 640\nPlayResY: 360\n\n",
+            q.clean_deck_name(),
+            ep.number
+        );
+        s.push_str("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+        s.push_str(&d.style1.line("Subs1"));
+        s.push('\n');
+        s.push_str(&d.style2.line("Subs2"));
+        s.push_str("\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+        for (li, c) in ep.lines.iter().enumerate() {
+            let dl = |style: &str, text: &str| {
+                format!("Dialogue: 0,{},{},{style},,0,0,0,,{text}\n", time::to_ass(c.start()), time::to_ass(c.end()))
+            };
+            let show2 = li % every == 0;
+            if d.subs2_first && show2 {
+                s.push_str(&dl("Subs2", &c.subs2.text));
+            }
+            s.push_str(&dl("Subs1", &c.subs1.text));
+            if !d.subs2_first && show2 {
+                s.push_str(&dl("Subs2", &c.subs2.text));
+            }
+        }
+        let name = sanitize_filename(&namer.create(&prefs.dueling_filename_format, ep.number, 0, 0, 0, "", ""));
+        let path = out_dir.join(name);
+        std::fs::write(&path, s)?;
+        written.push(path);
+
+        if d.quick_reference {
+            let mut r = String::new();
+            for c in &ep.lines {
+                seq += 1;
+                let t1 = c.subs1.text.replace("\\N", " ");
+                let t2 = c.subs2.text.replace("\\N", " ");
+                r.push_str(&namer.create(&prefs.dueling_quickref_subs1_format, ep.number, seq, c.start(), c.start(), &t1, &t2));
+                r.push('\n');
+                if !prefs.dueling_quickref_subs2_format.is_empty() {
+                    r.push_str(&namer.create(&prefs.dueling_quickref_subs2_format, ep.number, seq, c.start(), c.start(), &t1, &t2));
+                    r.push('\n');
+                }
+            }
+            let name = sanitize_filename(&namer.create(&prefs.dueling_quickref_filename_format, ep.number, 0, 0, 0, "", ""));
+            let path = out_dir.join(name);
+            std::fs::write(&path, r)?;
+            written.push(path);
+        }
+    }
+    Ok(written)
+}
+
+// ── Extract audio ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ExtractAudioSettings {
+    pub media_pattern: String,
+    pub audio_stream: u32,
+    pub output_dir: String,
+    pub name: String,
+    pub first_episode: i64,
+    pub span: Toggle<(Ms, Ms)>,
+    pub format: AudioFormat,
+    pub bitrate: u32,
+    /// Split into clips of this length (0 = one file per episode).
+    pub clip_length_ms: Ms,
+    /// Optional subtitles; their lines in each clip are written to its lyrics tag.
+    pub lyrics_subs1: String,
+    pub lyrics_subs2: String,
+    pub lyrics_encoding: String,
+}
+
+impl Default for ExtractAudioSettings {
+    fn default() -> Self {
+        ExtractAudioSettings {
+            media_pattern: String::new(),
+            audio_stream: 0,
+            output_dir: String::new(),
+            name: String::new(),
+            first_episode: 1,
+            span: Toggle::new(false, (0, 1_350_000)),
+            format: AudioFormat::Mp3,
+            bitrate: 128,
+            clip_length_ms: 300_000,
+            lyrics_subs1: String::new(),
+            lyrics_subs2: String::new(),
+            lyrics_encoding: "auto".into(),
+        }
+    }
+}
+
+pub fn extract_audio(x: &ExtractAudioSettings, prefs: &Prefs, progress: &Progress) -> Result<Vec<PathBuf>> {
+    ffmpeg::available()?;
+    let exts: Vec<&str> = VIDEO_EXTS.iter().chain(AUDIO_EXTS.iter()).copied().collect();
+    let media = files::expand(&x.media_pattern, &exts);
+    if media.is_empty() {
+        bail!("No media files match {}", x.media_pattern);
+    }
+    if x.output_dir.trim().is_empty() || x.name.trim().is_empty() {
+        bail!("Set a name and an output folder.");
+    }
+    let out_dir = PathBuf::from(files::expand_tilde(x.output_dir.trim()));
+    std::fs::create_dir_all(&out_dir)?;
+
+    // Lyrics (optional) are loaded through the normal subtitle pipeline.
+    let lyrics: Option<Vec<Episode>> = if x.lyrics_subs1.trim().is_empty() {
+        None
+    } else {
+        let mut p = Project {
+            first_episode: x.first_episode,
+            subs1: SubsSettings { pattern: x.lyrics_subs1.clone(), encoding: x.lyrics_encoding.clone(), ..Default::default() },
+            subs2: SubsSettings { pattern: x.lyrics_subs2.clone(), encoding: x.lyrics_encoding.clone(), ..Default::default() },
+            ..Default::default()
+        };
+        p.audio.enabled = false;
+        p.snapshots.enabled = false;
+        let sub_exts = pipeline::subtitle_exts();
+        let inp = Inputs {
+            subs1: files::expand(&p.subs1.pattern, &sub_exts),
+            subs2: files::expand(&p.subs2.pattern, &sub_exts),
+            ..Default::default()
+        };
+        if inp.subs1.len() != media.len() {
+            bail!("{} media file(s) but {} lyrics subtitle file(s).", media.len(), inp.subs1.len());
+        }
+        if p.has_subs2() && inp.subs2.len() != media.len() {
+            bail!("{} media file(s) but {} Subs2 lyrics file(s).", media.len(), inp.subs2.len());
+        }
+        Some(pipeline::load_episodes(&p, &inp, progress, false)?)
+    };
+
+    progress.set_steps(media.len());
+    let mut written = Vec::new();
+    for (i, file) in media.iter().enumerate() {
+        progress.next_step(&format!("Episode {} of {}", i + 1, media.len()));
+        progress.check()?;
+        let info = ffmpeg::probe(file)?;
+        let (mut a, mut b) = (0, info.duration.max(1));
+        if let Some(&(s, e)) = x.span.get() {
+            a = s.min(b);
+            b = e.min(b);
+        }
+        if b <= a {
+            continue;
+        }
+        let len = if x.clip_length_ms > 0 { x.clip_length_ms } else { b - a };
+        let mut chunks = Vec::new();
+        let mut t = a;
+        while t < b {
+            chunks.push((t, (t + len).min(b)));
+            t += len;
+        }
+        let episode = x.first_episode + i as i64;
+        let namer = Namer::new(&x.name.trim().replace(' ', "_"), media.len(), chunks.len(), b);
+        let n = chunks.len();
+        for (k, &(s, e)) in chunks.iter().enumerate() {
+            progress.check()?;
+            progress.update(Some(k as f64 / n as f64), format!("Clip {} of {n}", k + 1));
+            let base = namer.create(&prefs.extract_audio_filename_format, episode, k as i64 + 1, s, e, "", "");
+            let out = out_dir.join(sanitize_filename(&format!("{base}.{}", x.format.ext())));
+            let mut args: Vec<String> = vec![
+                "-y".into(),
+                "-ss".into(),
+                ffmpeg::ss(s),
+                "-i".into(),
+                file.display().to_string(),
+                "-t".into(),
+                ffmpeg::ss(e - s),
+                "-map".into(),
+                format!("0:a:{}", x.audio_stream),
+                "-vn".into(),
+                "-sn".into(),
+                "-map_metadata".into(),
+                "-1".into(),
+                "-ac".into(),
+                "2".into(),
+                "-c:a".into(),
+                x.format.codec().into(),
+                "-b:a".into(),
+                format!("{}k", x.bitrate),
+                "-metadata".into(),
+                format!("title={base}"),
+                "-metadata".into(),
+                format!("album={}_{episode:03}", x.name.trim()),
+                "-metadata".into(),
+                format!("track={}/{n}", k + 1),
+            ];
+            if let Some(eps) = &lyrics {
+                let mut text = String::new();
+                for c in eps[i].lines.iter().filter(|c| c.start() >= s && c.start() < e) {
+                    let (rs, re) = (c.start() - s, c.end() - s);
+                    let l1 = namer.create(&prefs.extract_lyrics_subs1_format, episode, 0, rs, re, &c.subs1.text, &c.subs2.text);
+                    text.push_str(&l1);
+                    text.push('\n');
+                    if eps[i].subs2_file.is_some() && !prefs.extract_lyrics_subs2_format.is_empty() {
+                        let l2 = namer.create(&prefs.extract_lyrics_subs2_format, episode, 0, rs, re, &c.subs1.text, &c.subs2.text);
+                        text.push_str(&l2);
+                        text.push('\n');
+                    }
+                }
+                if !text.trim().is_empty() {
+                    args.push("-metadata".into());
+                    args.push(format!("lyrics={}", text.trim_end()));
+                }
+            }
+            args.push(out.display().to_string());
+            ffmpeg::run(&args, Some(progress), None).map_err(|e| match e {
+                Error::Msg(m) => Error::msg(format!("{}: {m}", file.display())),
+                e => e,
+            })?;
+            written.push(out);
+        }
+    }
+    Ok(written)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn colors() {
+        assert_eq!(ass_color("#FF8000", 0), "&H000080FF");
+        assert_eq!(ass_color("000000", 0x80), "&H80000000");
+    }
+}

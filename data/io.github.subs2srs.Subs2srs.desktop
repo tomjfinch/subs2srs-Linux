@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=subs2srs
+GenericName=Flashcard Creator
+Comment=Create Anki flashcards from videos and subtitles
+Exec=subs2srs %F
+Icon=io.github.subs2srs.Subs2srs
+Terminal=false
+Categories=Education;Languages;AudioVideo;GTK;
+Keywords=anki;srs;subtitles;flashcards;language;japanese;immersion;
+StartupNotify=true

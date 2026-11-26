@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (without the v), e.g. 0.1.0"
+        required: true
+        default: "0.1.0"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then V="${{ github.event.inputs.version }}"; else V="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Install GTK 4
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build release tarball
+        run: packaging/make-dist.sh "${{ steps.v.outputs.version }}"
+
+      - name: Release notes
+        run: |
+          awk -v v="## ${{ steps.v.outputs.version }}" '$0==v{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "subs2srs for Linux ${{ steps.v.outputs.version }}" > notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.version }}
+          name: subs2srs for Linux ${{ steps.v.outputs.version }}
+          body_path: notes.md
+          target_commitish: ${{ github.sha }}
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
